@@ -1,71 +1,95 @@
 import streamlit as st
 import spacy
+import pandas as pd
 
-# Carregamento do modelo em português
+# Configuração da página do Streamlit
+st.set_page_config(
+    page_title="Classificador de Intenções NLP",
+    page_icon="🤖",
+    layout="centered"
+)
+
+# Carregamento do modelo spaCy com tratamento de erro
 @st.cache_resource
 def carregar_spacy():
-    return spacy.load("pt_core_news_sm")
+    try:
+        return spacy.load("pt_core_news_sm")
+    except OSError:
+        # Se não encontrar localmente, faz o download automático do modelo
+        from spacy.cli import download
+        download("pt_core_news_sm")
+        return spacy.load("pt_core_news_sm")
 
 nlp = carregar_spacy()
 
-st.title("🤖 Detecção de Intenção do Usuário com spaCy")
-st.write("Classificação de intenção (*Comprar*, *Cancelar*, *Suporte*) baseada na lematização das palavras.")
-
-# Mapeamento de lemas (raízes) para cada intenção
+# Dicionário de palavras-chave/lemmas mapeados para cada intenção
 INTENCOES = {
-    "comprar": {"comprar", "adquirir", "contratar", "pedido", "preço", "valor", "assinar", "compra"},
-    "cancelar": {"cancelar", "desistir", "encerrar", "cancelamento", "reembolso", "devolver", "estorno"},
-    "suporte": {"erro", "problema", "defeito", "bug", "ajuda", "suporte", "travar", "socorro", "senha", "acesso"}
+    "Bloquear Conta / Cartão": {"bloquear", "bloqueio", "perdi", "roubo", "roubar", "furtar", "furto", "perda", "segurança"},
+    "Solicitar 2ª Via": {"via", "segunda", "fatura", "boleto", "segunda-via", "reemitir", "codigo", "linha"},
+    "Comprar / Contratar": {"comprar", "adquirir", "contratar", "preço", "valor", "plano", "assinar", "comprar-novo"},
+    "Cancelar Serviço": {"cancelar", "desistir", "encerrar", "reembolso", "devolver", "cancelamento"},
+    "Suporte Técnico": {"erro", "problema", "defeito", "bug", "ajuda", "suporte", "senha", "acesso", "funciona"}
 }
 
-# Entrada do texto do usuário
-mensagem = st.text_input(
-    "Digite sua mensagem para o chatbot:",
-    placeholder="Ex: Quero cancelar o meu plano e pedir reembolso."
-)
+def identificar_intencao(texto):
+    doc = nlp(texto)
+    scores = {intencao: 0 for intencao in INTENCOES}
+    
+    # Processa cada token e compara com o lema correspondente
+    detalhes_tokens = []
+    for token in doc:
+        if not token.is_punct and not token.is_space:
+            lema = token.lemma_.lower()
+            intencao_encontrada = None
+            
+            for intencao, palavras in INTENCOES.items():
+                if lema in palavras:
+                    scores[intencao] += 1
+                    intencao_encontrada = intencao
+            
+            detalhes_tokens.append({
+                "Token": token.text,
+                "Lema (Raiz)": lema,
+                "Classe Gramatical": token.pos_,
+                "Intenção Mapeada": intencao_encontrada if intencao_encontrada else "-"
+            })
+            
+    # Determina a intenção com maior pontuação
+    intencao_final = max(scores, key=scores.get)
+    if scores[intencao_final] == 0:
+        intencao_final = "Não Identificada / Atendimento Geral"
+        
+    return intencao_final, detalhes_tokens, doc
 
-if st.button("Identificar Intenção", type="primary"):
-    if not mensagem.strip():
-        st.warning("Por favor, digite uma mensagem.")
-    else:
-        # Processamento do texto pelo spaCy
-        doc = nlp(mensagem)
+# Interface Visual
+st.title("🤖 Classificador de Intenções de Clientes")
+st.markdown("Digite a mensagem do cliente para identificar a ação necessária (Bloqueio, 2ª Via, Suporte, etc.).")
+
+# Entrada do utilizador
+mensagem = st.text_area("Mensagem do Cliente:", placeholder="Ex: Perdi meu cartão e preciso bloquear ou solicitar a segunda via da fatura...")
+
+if st.button("Analisar Intenção", type="primary"):
+    if mensagem.strip():
+        intencao, tokens_df, doc = identificar_intencao(mensagem)
         
-        # Extração dos lemas em minúsculas (ignorando pontuações e espaços)
-        lemas = [token.lemma_.lower() for token in doc if not token.is_punct and not token.is_space]
+        st.divider()
+        st.subheader("🎯 Resultado da Análise")
         
-        # Contagem de correspondências por intenção
-        scores = {intencao: 0 for intencao in INTENCOES}
-        palavras_detectadas = {intencao: [] for intencao in INTENCOES}
-        
-        for token in doc:
-            if not token.is_punct and not token.is_space:
-                lema = token.lemma_.lower()
-                for intencao, palavras_chave in INTENCOES.items():
-                    if lema in palavras_chave:
-                        scores[intencao] += 1
-                        palavras_detectadas[intencao].append(token.text)
-        
-        # Determinar a intenção principal
-        intencao_definida = max(scores, key=scores.get)
-        max_score = scores[intencao_definida]
-        
-        st.subheader("Resultado do Reconhecimento:")
-        
-        if max_score == 0:
-            st.info("❓ **Intenção: DESCONHECIDA** (Nenhuma palavra-chave identificada)")
+        # Exibição da Intenção em destaque
+        if "Bloquear" in intencao:
+            st.error(f"🚨 **AÇÃO REQUERIDA:** {intencao}")
+        elif "2ª Via" in intencao:
+            st.warning(f"📄 **AÇÃO REQUERIDA:** {intencao}")
+        elif "Cancelar" in intencao:
+            st.warning(f"⚠️ **AÇÃO REQUERIDA:** {intencao}")
+        elif "Comprar" in intencao:
+            st.success(f"🛒 **AÇÃO REQUERIDA:** {intencao}")
         else:
-            if intencao_definida == "comprar":
-                st.success(f"🛒 **Intenção Detectada: COMPRAR**")
-            elif intencao_definida == "cancelar":
-                st.error(f"🚫 **Intenção Detectada: CANCELAR**")
-            elif intencao_definida == "suporte":
-                st.warning(f"🛠️ **Intenção Detectada: SUPORTE**")
-                
-            st.write(f"Termos que ativaram a intenção: **{', '.join(palavras_detectadas[intencao_definida])}**")
-
-        # Exibição dos lemas extraídos pelo spaCy
-        with st.expander("🔍 Detalhes do Processamento NLP (spaCy)"):
-            st.write("**Tokens e Lemas extraídos:**")
-            tabela_tokens = [{"Palavra Original": token.text, "Lema (Raiz)": token.lemma_.lower()} for token in doc if not token.is_punct and not token.is_space]
-            st.dataframe(tabela_tokens, use_container_width=True)
+            st.info(f"ℹ️ **AÇÃO REQUERIDA:** {intencao}")
+            
+        # Exibição dos Tokens e Lemas processados pelo spaCy
+        st.subheader("🔍 Tabela de Lemas e Tokens (spaCy)")
+        st.dataframe(pd.DataFrame(tokens_df), use_container_width=True)
+        
+    else:
+        st.warning("Por favor, digite uma mensagem antes de analisar.")
